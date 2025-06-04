@@ -13,6 +13,9 @@
 // ARDUINOOTA -> DOESN'T WORK YET -> SOMETHING WRONG WITH MDNS
 // STA Mode to configure wifi -> WIP
 
+// DS1820 added
+//
+
 // +12V RED
 // GND  BLACK
 // A    YELLOW
@@ -27,7 +30,9 @@
 #include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <ESP8266httpUpdate.h>
-
+// DS1820
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 
 #define VERSION "0.37.4"
@@ -37,6 +42,7 @@ String WIFI_PASSWORD = "RosieAndElisaBean1";
 String BROKER = "192.168.8.126";
 String BROKER_LOGIN = "mqtt";
 String BROKER_PASS = "13Cambridge!";
+String OTA_PASS = "ota1234";
 #define AUTO_TX true //if your chip needs to pull D1 high/low set this to false
 #define SAVE_CONN true //save the ip details above to local filesystem
 
@@ -51,6 +57,10 @@ String BROKER_PASS = "13Cambridge!";
 #define RLY1  D7
 #define RLY2  D8
 
+// DS1820 GPIO
+#define ONE_WIRE_BUS D2 // GPIO5 (D1)
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
 
 CircularBuffer<uint8_t, 35> Q_in;
 CircularBuffer<uint8_t, 35> Q_out;
@@ -469,6 +479,16 @@ void mqttpubsub() {
       mqtt.publish("homeassistant/switch/Spa", "");
       mqtt.publish("/Spa", "");
 
+      //DS1820
+      mqtt.publish("homeassistant/sensor/Spa/external_temp/config",
+             "{\"name\": \"Spa External Temperature\","
+             " \"state_topic\": \"spa/external_temp\","
+             " \"unit_of_measurement\": \"°C\","
+             " \"device_class\": \"temperature\","
+             " \"unique_id\": \"spa_external_temp\","
+             " \"value_template\": \"{{ value }}\"}",
+             true);
+
       //temperature -> can we try and remove the Payload below, it's messy
       Payload = "{\"name\":\"Hot tub status\",\"uniq_id\":\"ESP82Spa_1\",\"stat_t\":\"Spa/node/state\",\"platform\":\"mqtt\",\"dev\":{\"ids\":[\"ESP82Spa\"],\"name\":\"Esp Spa\",\"sw\":\""+String(VERSION)+"\"}}";
       mqtt.publish("homeassistant/binary_sensor/Spa/state/config", Payload.c_str(), true);
@@ -476,7 +496,7 @@ void mqttpubsub() {
       if (SpaConfig.temp_scale == 0) {
         mqtt.publish("homeassistant/climate/Spa/temperature/config", "{\"name\":\"Hot tub thermostat\",\"uniq_id\":\"ESP82Spa_0\",\"temp_cmd_t\":\"Spa/target_temp/set\",\"mode_cmd_t\":\"Spa/heat_mode/set\",\"mode_stat_t\":\"Spa/heat_mode/state\",\"temp_unit\": \"F\",\"curr_temp_t\":\"Spa/temperature/state\",\"temp_stat_t\":\"Spa/target_temp/state\",\"min_temp\":\"80\",\"max_temp\":\"105\",\"modes\":[\"off\", \"heat\"], \"temp_step\":\"1\",\"platform\":\"mqtt\",\"dev\":{\"ids\":[\"ESP82Spa\"]}}", true);
       } else if (SpaConfig.temp_scale == 1) {
-        mqtt.publish("homeassistant/climate/Spa/temperature/config", "{\"name\":\"Hot tub thermostat\",\"uniq_id\":\"ESP82Spa_0\",\"temp_cmd_t\":\"Spa/target_temp/set\",\"mode_cmd_t\":\"Spa/heat_mode/set\",\"mode_stat_t\":\"Spa/heat_mode/state\",\"temp_unit\": \"C\",\"curr_temp_t\":\"Spa/temperature/state\",\"temp_stat_t\":\"Spa/target_temp/state\",\"min_temp\":\"27\",\"max_temp\":\"40\",\"modes\":[\"off\", \"heat\"], \"temp_step\":\"0.5\",\"platform\":\"mqtt\",\"dev\":{\"ids\":[\"ESP82Spa\"]}}", true);
+        mqtt.publish("homeassistant/climate/Spa/temperature/config", "{\"name\":\"Hot tub thermostat\",\"uniq_id\":\"ESP82Spa_0\",\"temp_cmd_t\":\"Spa/target_temp/set\",\"mode_cmd_t\":\"Spa/heat_mode/set\",\"mode_stat_t\":\"Spa/heat_mode/state\",\"temp_unit\": \"C\",\"curr_temp_t\":\"Spa/temperature/state\",\"temp_stat_t\":\"Spa/target_temp/state\",\"min_temp\":\"11\",\"max_temp\":\"40\",\"modes\":[\"off\", \"heat\"], \"temp_step\":\"0.5\",\"platform\":\"mqtt\",\"dev\":{\"ids\":[\"ESP82Spa\"]}}", true);
       }
       //heat mode
       mqtt.publish("homeassistant/switch/Spa/heatingmode/config", "{\"name\":\"Hot tub heating mode\",\"uniq_id\":\"ESP82Spa_3\",\"cmd_t\":\"Spa/heatingmode/set\",\"stat_t\":\"Spa/heatingmode/state\",\"platform\":\"mqtt\",\"dev\":{\"ids\":[\"ESP82Spa\"]}}", true);
@@ -523,6 +543,9 @@ void mqttpubsub() {
   mqtt.publish("Spa/node/flashsize", String(ESP.getFlashChipRealSize()).c_str());
   mqtt.publish("Spa/node/chipid", String(ESP.getChipId()).c_str());
 	mqtt.publish("Spa/node/speed", String(ESP.getCpuFreqMHz()).c_str());
+
+
+
 
   // ... and resubscribe
   mqtt.subscribe("Spa/command");
@@ -674,7 +697,10 @@ void setup() {
   //jsonSettings["BROKER_PASS"] = "";
 
   ArduinoOTA.begin();
+  ArduinoOTA.setPassword(OTA_PASS.c_str());
 
+  //DS1820
+  sensors.begin();
   String error_msg = "";
 
   //if (LittleFS.format()){
@@ -804,7 +830,16 @@ void setup() {
   mqtt.publish("Spa/debug/error", error_msg.c_str());
   */
 
+ 
 }
+
+//DS1820
+unsigned long lastTempRequest = 0;
+bool tempRequested = false;
+unsigned long tempRequestTime = 0;
+const unsigned long tempRequestInterval = 60000; // 60 sec
+const unsigned long tempConversionDelay = 750;   // 750 ms sensor delay
+float last_temp = 0;
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) ESP.restart();
@@ -977,6 +1012,37 @@ void loop() {
     // Clean up queue
     _yield();
     Q_in.clear();
+  }
+
+//DS1820
+unsigned long now = millis();
+
+  // Start sensor reading
+  if (!tempRequested && now - lastTempRequest >= tempRequestInterval) {
+    sensors.requestTemperatures();        // Initiera mätning
+    tempRequested = true;                 // Vänta på konvertering
+    tempRequestTime = now;               // Spara starttid
+    // Ingen temp publiceras här ännu
+  }
+
+  // Read temp and publish
+  if (tempRequested && now - tempRequestTime >= tempConversionDelay) {
+    float temp = sensors.getTempCByIndex(0);  // Läs sensorn
+
+    if (temp != DEVICE_DISCONNECTED_C) {
+      // Wait until set interval
+      if (now - lastTempRequest >= tempRequestInterval) {
+        last_temp = temp;
+        lastTempRequest = now;
+
+        // Publicera till MQTT
+        mqtt.publish("spa/external_temp", String(temp).c_str(), true);
+      }
+    } else {
+      //debug error mqtt.publish("spa/external_temp", "199", true);
+    }
+
+    tempRequested = false;
   }
 
   // Long time no receive
