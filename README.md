@@ -1,3 +1,9 @@
+#DS1820
+Added DS1820 support for external temperature reading.
+
+
+
+
 Based on the great work over at \
 https://github.com/ccutrer/balboa_worldwide_app/wiki
 https://github.com/ccutrer/balboa_worldwide_app/blob/master/doc/protocol.md
